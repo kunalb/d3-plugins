@@ -4,7 +4,8 @@ d3.sankey = function() {
       nodePadding = 8,
       size = [1, 1],
       nodes = [],
-      links = [];
+      links = [],
+      components = [];
 
   sankey.nodeWidth = function(_) {
     if (!arguments.length) return nodeWidth;
@@ -39,9 +40,13 @@ d3.sankey = function() {
   sankey.layout = function(iterations) {
     computeNodeLinks();
     computeNodeValues();
+
+    computeNodeStructure();
     computeNodeBreadths();
+
     computeNodeDepths(iterations);
     computeLinkDepths();
+    
     return sankey;
   };
 
@@ -53,18 +58,69 @@ d3.sankey = function() {
   sankey.link = function() {
     var curvature = .5;
 
-    function link(d) {
+    function forwardLink(d) {
       var x0 = d.source.x + d.source.dx,
           x1 = d.target.x,
           xi = d3.interpolateNumber(x0, x1),
           x2 = xi(curvature),
           x3 = xi(1 - curvature),
-          y0 = d.source.y + d.sy + d.dy / 2,
-          y1 = d.target.y + d.ty + d.dy / 2;
+          y0 = d.source.y + d.sy,
+          y1 = d.target.y + d.ty,
+          y2 = d.source.y + d.sy + d.dy,
+          y3 = d.target.y + d.ty + d.dy;
       return "M" + x0 + "," + y0
-           + "C" + x2 + "," + y0
-           + " " + x3 + "," + y1
-           + " " + x1 + "," + y1;
+           + "C" + x2 + "," + y0 + " " + x3 + "," + y1 + " " + x1 + "," + y1
+           + "L" + x1 + "," + y3
+           + "C" + x3 + "," + y3 + " " + x2 + "," + y2 + " " + x0 + "," + y2
+           + "Z";
+    }
+
+    function backwardLink(d) {
+      var x0 = d.source.x + d.source.dx,
+          x1 = d.target.x,
+          xi = d3.interpolateNumber(x0, x1),
+          x2 = xi(curvature) + x0 - x1,
+          x3 = xi(1 - curvature) + x1 - x0,
+          y0 = d.source.y + d.sy,
+          y1 = d.target.y + d.ty,
+          y2 = d.source.y + d.sy + d.dy,
+          y3 = d.target.y + d.ty + d.dy;
+      return "M" + x0 + "," + y0
+           + "C" + x2 + "," + y0 + " " + x3 + "," + y1 + " " + x1 + "," + y1
+           + "L" + x1 + "," + y3
+           + "C" + x3 + "," + y3 + " " + x2 + "," + y2 + " " + x0 + "," + y2
+           + "Z";
+    }
+
+    function selfLink(d) {
+      var x0 = d.source.x + d.source.dx,
+          x1 = d.target.x,
+          xi = d3.interpolateNumber(x0, x1),
+          x2 = x0 + nodeWidth * 2,
+          x3 = x1 - nodeWidth * 2,
+          y0 = d.source.y + d.sy,
+          y1 = d.target.y + d.ty,
+          y2 = d.source.y + d.sy + d.dy,
+          y3 = d.target.y + d.ty + d.dy,
+          y0_ = y0 + d.dy/2,
+          y1_ = y1 + d.dy/2,
+          y2_ = y2 + d.dy/2,
+          y3_ = y3 + d.dy/2;
+      return "M" + x0 + "," + y0
+           + "C" + x2 + "," + y0_ + " " + x3 + "," + y1_ + " " + x1 + "," + y1
+           + "L" + x1 + "," + y3
+           + "C" + x3 + "," + y3_ + " " + x2 + "," + y2_ + " " + x0 + "," + y2
+           + "Z";
+    }
+
+    function link(d) {
+      if (d.source == d.target) {
+        return selfLink(d);
+      } else if (d.source.x < d.target.x) {
+        return forwardLink(d);
+      } else {
+        return backwardLink(d);
+      }
     }
 
     link.curvature = function(_) {
@@ -83,6 +139,7 @@ d3.sankey = function() {
       node.sourceLinks = [];
       node.targetLinks = [];
     });
+
     links.forEach(function(link) {
       var source = link.source,
           target = link.target;
@@ -103,31 +160,165 @@ d3.sankey = function() {
     });
   }
 
-  // Iteratively assign the breadth (x-position) for each node.
-  // Nodes are assigned the maximum breadth of incoming neighbors plus one;
-  // nodes with no incoming links are assigned breadth zero, while
-  // nodes with no outgoing links are assigned the maximum breadth.
-  function computeNodeBreadths() {
-    var remainingNodes = nodes,
-        nextNodes,
-        x = 0;
+  // Take the list of nodes and create a DAG of supervertices, each consisting 
+  // of a strongly connected component of the graph
+  //
+  // Based off:
+  // http://en.wikipedia.org/wiki/Tarjan's_strongly_connected_components_algorithm
+  function computeNodeStructure() {
+    var nodeStack = [], 
+        index = 0;
 
-    while (remainingNodes.length) {
-      nextNodes = [];
-      remainingNodes.forEach(function(node) {
-        node.x = x;
-        node.dx = nodeWidth;
-        node.sourceLinks.forEach(function(link) {
-          nextNodes.push(link.target);
+    nodes.forEach(function(node) {
+      if (!node.index) {
+        connect(node);
+      }
+    });
+
+    function connect(node) {
+      node.index = index++;
+      node.lowIndex = node.index;
+      node.onStack = true;
+      nodeStack.push(node);
+
+      if (node.sourceLinks) {
+        node.sourceLinks.forEach(function(sourceLink){
+          var target = sourceLink.target;
+          if (!target.hasOwnProperty('index')) {
+            connect(target);
+            node.lowIndex = Math.min(node.lowIndex, target.lowIndex);
+          } else if (target.onStack) {
+            node.lowIndex = Math.min(node.lowIndex, target.index);
+          }
         });
-      });
-      remainingNodes = nextNodes;
-      ++x;
+
+        if (node.lowIndex === node.index) {
+          var component = [], currentNode;
+          do { 
+            currentNode = nodeStack.pop()
+            currentNode.onStack = false;
+            component.push(currentNode);
+          } while (currentNode != node);
+          components.push({
+            root: node,
+            scc: component
+          });
+        }
+      }
     }
 
-    //
-    moveSinksRight(x);
-    scaleNodeBreadths((size[0] - nodeWidth) / (x - 1));
+    components.forEach(function(component, i){
+      component.scc.forEach(function(node) {
+        node.component = i;
+      });
+    });
+  }
+
+  // Assign the breadth (x-position) for each strongly connected component,
+  // followed by assigning breadth within the component.
+  function computeNodeBreadths() {
+    components.reverse();
+    
+    components.forEach(function(component){
+      if (!component.x) {
+        var sourceX = Math.max.apply({}, flatten(flatten(component.scc.map(function(node){
+          return node.targetLinks.map(function(link){
+            return components[link.source.component].x ? 
+              components[link.source.component].x : 0;
+          });
+        }))));
+
+        bfs(component, Math.max(sourceX, 0), function(component){
+          var targets = flatten(flatten(component.scc.map(function(node){
+            return node.sourceLinks.map(function(link){
+              return link.target;
+            });
+          })));
+          
+          return targets.map(function(target){
+            return components[target.component];
+          });
+        });
+      }
+    });
+
+    components.forEach(function(component, i){
+      bfs(component.root, 0, function(node){
+        var result = node.sourceLinks
+          .filter(function(sourceLink){
+            return sourceLink.target.component == components.length - i - 1;
+          })
+          .map(function(sourceLink){
+            return sourceLink.target;
+          });
+        return result;
+      });
+    });
+
+    components.reverse();
+
+    var max = 0;
+    var componentsByBreadth = d3.nest()
+      .key(function(d) { return d.x; })
+      .sortKeys(d3.ascending)
+      .entries(components)
+      .map(function(d) { return d.values; });
+
+    var max = -1, nextMax = -1;
+    componentsByBreadth.forEach(function(c){
+      c.forEach(function(component){
+        component.x = max + 1;
+        component.scc.forEach(function(node){
+          node.x = component.x + node.x;
+          nextMax = Math.max(nextMax, node.x);
+        });
+      });
+      max = nextMax;
+    });
+
+    nodes.forEach(function(node) {
+      var outgoing = node.sourceLinks
+        .filter(function(link) {
+          return link.source != link.target;
+        });
+      if (outgoing == 0) {
+        node.x = max + 1;
+      }
+    });
+
+    scaleNodeBreadths((size[0] - nodeWidth) / (max));
+
+    function flatten(a) {
+      return [].concat.apply([], a);
+    }
+
+    function bfs(node, sourceX, extractTargets) {
+      var queue = [node], currentCount = 1, nextCount = 0;
+      var x = sourceX + 1 || 0;
+
+      while(currentCount > 0) {
+        var currentNode = queue.shift();
+        currentCount--;
+
+        if (!currentNode.hasOwnProperty('x')) {
+          currentNode.x = x;
+          currentNode.dx = nodeWidth;
+
+          var targets = extractTargets(currentNode);
+
+          queue = queue.concat(targets);
+          nextCount += targets.length;
+        }
+
+
+        if (currentCount == 0) { // level change
+          x++;
+          currentCount = nextCount;
+          nextCount = 0;
+        }
+
+      }
+    }
   }
 
   function moveSourcesRight() {
@@ -290,3 +481,5 @@ d3.sankey = function() {
 
   return sankey;
 };
+
+module.exports = d3.sankey;
