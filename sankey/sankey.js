@@ -481,5 +481,3 @@ d3.sankey = function() {
 
   return sankey;
 };
-
-module.exports = d3.sankey;
