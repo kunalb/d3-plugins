@@ -208,6 +208,7 @@ d3.sankey = function() {
     }
 
     components.forEach(function(component, i){
+      component.index = i;
       component.scc.forEach(function(node) {
         node.component = i;
       });
@@ -217,36 +218,14 @@ d3.sankey = function() {
   // Assign the breadth (x-position) for each strongly connected component,
   // followed by assigning breadth within the component.
   function computeNodeBreadths() {
-    components.reverse();
     
-    components.forEach(function(component){
-      if (!component.x) {
-        var sourceX = Math.max.apply({}, flatten(flatten(component.scc.map(function(node){
-          return node.targetLinks.map(function(link){
-            return components[link.source.component].x ? 
-              components[link.source.component].x : 0;
-          });
-        }))));
-
-        bfs(component, Math.max(sourceX, 0), function(component){
-          var targets = flatten(flatten(component.scc.map(function(node){
-            return node.sourceLinks.map(function(link){
-              return link.target;
-            });
-          })));
-          
-          return targets.map(function(target){
-            return components[target.component];
-          });
-        });
-      }
-    });
+    layerComponents();
 
     components.forEach(function(component, i){
-      bfs(component.root, 0, function(node){
+      bfs(component.root, function(node){
         var result = node.sourceLinks
           .filter(function(sourceLink){
-            return sourceLink.target.component == components.length - i - 1;
+            return sourceLink.target.component == i;
           })
           .map(function(sourceLink){
             return sourceLink.target;
@@ -255,7 +234,7 @@ d3.sankey = function() {
       });
     });
 
-    components.reverse();
+    console.log(nodes.map(function(n){return [n.name, n.x];}));
 
     var max = 0;
     var componentsByBreadth = d3.nest()
@@ -276,15 +255,13 @@ d3.sankey = function() {
       max = nextMax;
     });
 
-    nodes.forEach(function(node) {
-      var outgoing = node.sourceLinks
-        .filter(function(link) {
-          return link.source != link.target;
-        });
-      if (outgoing == 0) {
-        node.x = max + 1;
-      }
-    });
+    
+    nodes
+      .filter(function(node) {
+        var outLinks = node.sourceLinks.filter(function(link){ return link.source.name != link.target.name; });
+        return (outLinks.length == 0);
+      })
+      .forEach(function(node) { node.x = max; })
 
     scaleNodeBreadths((size[0] - nodeWidth) / (max));
 
@@ -292,9 +269,42 @@ d3.sankey = function() {
       return [].concat.apply([], a);
     }
 
-    function bfs(node, sourceX, extractTargets) {
+    function layerComponents() {
+      var remainingComponents = components,
+          nextComponents,
+          visitedIndex,
+          x = 0;
+
+      while (remainingComponents.length) {
+        console.log(remainingComponents);
+
+        nextComponents = [];
+        visitedIndex = {};
+
+        remainingComponents.forEach(function(component) {
+          component.x = x;
+
+          component.scc.forEach(function(n) {
+            n.sourceLinks.forEach(function(l) {
+              if (!visitedIndex.hasOwnProperty(l.target.component) &&
+                   l.target.component != component.index) {
+                nextComponents.push(components[l.target.component]);
+                visitedIndex[l.target.component] = true;
+              }
+            })
+          });
+        });
+
+        remainingComponents = nextComponents;
+        ++x;
+      }
+
+      console.log(components.map(function(c){return [c.root.name, c.x]}));
+    }
+
+    function bfs(node, extractTargets) {
       var queue = [node], currentCount = 1, nextCount = 0;
-      var x = sourceX + 1 || 0;
+      var x = 0;
 
       while(currentCount > 0) {
         var currentNode = queue.shift();
