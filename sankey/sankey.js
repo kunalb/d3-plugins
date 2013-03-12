@@ -55,10 +55,35 @@ d3.sankey = function() {
     return sankey;
   };
 
-  sankey.link = function() {
+  // A more involved path generator that requires 3 elements to render -- 
+  // It draws a starting element, intermediate and end element that are useful
+  // while drawing reverse links to get an appropriate fill.
+  //
+  // Each link is now an area and not a basic spline and no longer guarantees
+  // fixed width throughout.
+  //
+  // Sample usage:
+  //
+  //  linkNodes = this._svg.append("g").selectAll(".link")
+  //      .data(this.links)
+  //    .enter().append("g")
+  //      .attr("fill", "none")
+  //      .attr("class", ".link")
+  //      .sort(function(a, b) { return b.dy - a.dy; });
+  //
+  //  linkNodePieces = [];
+  //  for (var i = 0; i < 3; i++) {
+  //    linkNodePieces[i] = linkNodes.append("path")
+  //      .attr("class", ".linkPiece")
+  //      .attr("d", path(i))
+  //      .attr("fill", ...)
+  //  }
+  sankey.reversibleLink = function() {
     var curvature = .5;
 
-    function forwardLink(d) {
+    // Used when source is behind target, the first and last paths are simple
+    // lines at the start and end node while the second path is the spline
+    function forwardLink(part, d) {
       var x0 = d.source.x + d.source.dx,
           x1 = d.target.x,
           xi = d3.interpolateNumber(x0, x1),
@@ -68,59 +93,114 @@ d3.sankey = function() {
           y1 = d.target.y + d.ty,
           y2 = d.source.y + d.sy + d.dy,
           y3 = d.target.y + d.ty + d.dy;
-      return "M" + x0 + "," + y0
-           + "C" + x2 + "," + y0 + " " + x3 + "," + y1 + " " + x1 + "," + y1
-           + "L" + x1 + "," + y3
-           + "C" + x3 + "," + y3 + " " + x2 + "," + y2 + " " + x0 + "," + y2
-           + "Z";
+
+      switch (part) {
+        case 0:
+          return "M" + x0 + "," + y0 + "L" + x0 + "," + (y0 + d.dy);
+
+        case 1:
+          return "M" + x0 + "," + y0
+               + "C" + x2 + "," + y0 + " " + x3 + "," + y1 + " " + x1 + "," + y1
+               + "L" + x1 + "," + y3
+               + "C" + x3 + "," + y3 + " " + x2 + "," + y2 + " " + x0 + "," + y2
+               + "Z";
+      
+        case 2:
+          return "M" + x1 + "," + y1 + "L" + x1 + "," + (y1 + d.dy);
+      }
     }
 
-    function backwardLink(d) {
-      var x0 = d.source.x + d.source.dx,
-          x1 = d.target.x,
-          xi = d3.interpolateNumber(x0, x1),
-          x2 = xi(curvature) + x0 - x1,
-          x3 = xi(1 - curvature) + x1 - x0,
+    // Used for self loops and when the source is actually in front of the 
+    // target; the first element is a turning path from the source to the 
+    // destination, the second element connects the two twists and the last 
+    // twists into the target element.
+    //
+    // 
+    //  /--Target
+    //  \----------------------\
+    //                 Source--/
+    //
+    function backwardLink(part, d) {
+      var curveExtension = 30;
+      var curveDepth = 15;
+
+      function getDir(d) {
+        return d.source.y + d.sy > d.target.y + d.ty ? -1 : 1;
+      }
+
+      function p(x, y) {
+        return x + "," + y + " ";
+      }
+
+      var dt = getDir(d) * curveDepth,
+          x0 = d.source.x + d.source.dx,
           y0 = d.source.y + d.sy,
-          y1 = d.target.y + d.ty,
-          y2 = d.source.y + d.sy + d.dy,
-          y3 = d.target.y + d.ty + d.dy;
-      return "M" + x0 + "," + y0
-           + "C" + x2 + "," + y0 + " " + x3 + "," + y1 + " " + x1 + "," + y1
-           + "L" + x1 + "," + y3
-           + "C" + x3 + "," + y3 + " " + x2 + "," + y2 + " " + x0 + "," + y2
-           + "Z";
+          x1 = d.target.x,
+          y1 = d.target.y + d.ty;
+
+      switch (part) {
+        case 0:
+          return "M" + p(x0, y0) + 
+                 "C" + p(x0, y0) +
+                       p(x0 + curveExtension, y0) +
+                       p(x0 + curveExtension, y0 + dt) +
+                 "L" + p(x0 + curveExtension, y0 + dt + d.dy) +
+                 "C" + p(x0 + curveExtension, y0 + d.dy) +
+                       p(x0, y0 + d.dy) +
+                       p(x0, y0 + d.dy) +
+                 "Z";
+        case 1:
+          return "M" + p(x0 + curveExtension, y0 + dt) + 
+                 "C" + p(x0 + curveExtension, y0 + 3 * dt) +
+                       p(x1 - curveExtension, y1 - 3 * dt) +
+                       p(x1 - curveExtension, y1 - dt) +
+                 "L" + p(x1 - curveExtension, y1 - dt + d.dy) +
+                 "C" + p(x1 - curveExtension, y1 - 3 * dt + d.dy) +
+                       p(x0 + curveExtension, y0 + 3 * dt + d.dy) +
+                       p(x0 + curveExtension, y0 + dt + d.dy) +
+                 "Z";
+
+        case 2:
+          return "M" + p(x1 - curveExtension, y1 - dt) + 
+                 "C" + p(x1 - curveExtension, y1) +
+                       p(x1, y1) +
+                       p(x1, y1) +
+                 "L" + p(x1, y1 + d.dy) +
+                 "C" + p(x1, y1 + d.dy) +
+                       p(x1 - curveExtension, y1 + d.dy) +
+                       p(x1 - curveExtension, y1 + d.dy - dt) +
+                 "Z";
+      }
     }
 
-    function selfLink(d) {
-      var x0 = d.source.x + d.source.dx,
-          x1 = d.target.x,
-          xi = d3.interpolateNumber(x0, x1),
-          x2 = x0 + nodeWidth * 2,
-          x3 = x1 - nodeWidth * 2,
-          y0 = d.source.y + d.sy,
-          y1 = d.target.y + d.ty,
-          y2 = d.source.y + d.sy + d.dy,
-          y3 = d.target.y + d.ty + d.dy,
-          y0_ = y0 + d.dy/2,
-          y1_ = y1 + d.dy/2,
-          y2_ = y2 + d.dy/2,
-          y3_ = y3 + d.dy/2;
-      return "M" + x0 + "," + y0
-           + "C" + x2 + "," + y0_ + " " + x3 + "," + y1_ + " " + x1 + "," + y1
-           + "L" + x1 + "," + y3
-           + "C" + x3 + "," + y3_ + " " + x2 + "," + y2_ + " " + x0 + "," + y2
-           + "Z";
+    return function(part) {
+      return function(d) {
+        if (d.source.x < d.target.x) {
+          return forwardLink(part, d);
+        } else {
+          return backwardLink(part, d);
+        }
+      }
     }
+  };
+
+  // The standard link path using a constant width spline that needs a 
+  // single path element.
+  sankey.link = function() {
+    var curvature = .5;
 
     function link(d) {
-      if (d.source == d.target) {
-        return selfLink(d);
-      } else if (d.source.x < d.target.x) {
-        return forwardLink(d);
-      } else {
-        return backwardLink(d);
-      }
+      var x0 = d.source.x + d.source.dx,
+          x1 = d.target.x,
+          xi = d3.interpolateNumber(x0, x1),
+          x2 = xi(curvature),
+          x3 = xi(1 - curvature),
+          y0 = d.source.y + d.sy + d.dy / 2,
+          y1 = d.target.y + d.ty + d.dy / 2;
+      return "M" + x0 + "," + y0
+           + "C" + x2 + "," + y0
+           + " " + x3 + "," + y1
+           + " " + x1 + "," + y1;
     }
 
     link.curvature = function(_) {
@@ -234,8 +314,6 @@ d3.sankey = function() {
       });
     });
 
-    console.log(nodes.map(function(n){return [n.name, n.x];}));
-
     var max = 0;
     var componentsByBreadth = d3.nest()
       .key(function(d) { return d.x; })
@@ -263,7 +341,7 @@ d3.sankey = function() {
       })
       .forEach(function(node) { node.x = max; })
 
-    scaleNodeBreadths((size[0] - nodeWidth) / (max));
+    scaleNodeBreadths((size[0] - nodeWidth) / Math.max(max, 1));
 
     function flatten(a) {
       return [].concat.apply([], a);
@@ -276,8 +354,6 @@ d3.sankey = function() {
           x = 0;
 
       while (remainingComponents.length) {
-        console.log(remainingComponents);
-
         nextComponents = [];
         visitedIndex = {};
 
@@ -298,8 +374,6 @@ d3.sankey = function() {
         remainingComponents = nextComponents;
         ++x;
       }
-
-      console.log(components.map(function(c){return [c.root.name, c.x]}));
     }
 
     function bfs(node, extractTargets) {
